@@ -1,0 +1,242 @@
+---
+title: "Arya Ayati Project 1 R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This is the accompanying Notebook for my project 1 results/code. 
+My project seeked out whether the sentiment of a school changed over time. My hypothesis was that for a given school, the sentiment should not change between their publications over time. The underlying idea was that a school has a set of thoughts that they follow, and that they wouldn't change that drastically over time since any large shifts would probably sprout a new school of thought. 
+
+## Step 0 - Initialize the environment
+
+```{r}
+packages.used=c("dplyr", "tidyverse", "tm", "wordcloud", "RColorBrewer", 
+                "tidytext", "Rcpp", "textclean", "ggalt", "ggplot2", "gridExtra")
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,
+                   repos='http://cran.us.r-project.org')
+}
+
+library(dplyr)
+library(tidyverse)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+library(tidytext)
+library(Rcpp)
+library(textclean)
+library(ggalt)
+library(ggplot2)
+library(gridExtra)
+setwd("M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati")
+```
+The notebook was prepared with the following environmental settings. 
+```{r}
+print(R.version)
+```
+## Step 1 - Read in the philosophy data and check the formatting
+```{r}
+data.raw = read.csv('data/philosophy_data.csv')
+```
+```{r}
+colnames(data.raw)
+```
+```{r}
+unique(data.raw$author)
+```
+```{r}
+unique(data.raw$school)
+```
+```{r}
+summary(data.raw$original_publication_date)
+```
+```{r}
+summary(unique(data.raw$title))
+```
+The data contains 59 titles for 13 schools of thought so we can expect enough datapoints to run a regression on most schools. 
+
+## Step 2 - Text processing
+```{r}
+sentenceCorpus <- Corpus(VectorSource(data.raw$sentence_lowered))
+sentenceCorpus<-tm_map(sentenceCorpus, removeWords, stopwords("english"))
+sentenceCorpus<-tm_map(sentenceCorpus, removeWords, character(0))
+sentenceCorpus<-tm_map(sentenceCorpus, removePunctuation)
+sentenceCorpus<-tm_map(sentenceCorpus, stripWhitespace)
+
+tdm <- TermDocumentMatrix(sentenceCorpus)
+tdm = removeSparseTerms(tdm, 0.99)
+tdm.tidy = tidytext::tidy(tdm)
+tdm.overall=summarise(group_by(tdm.tidy, term), sum(count))
+```
+## Step 3 - Overall wordcloud inspection
+Generating a wordcloud of the Document Term Matrix cleaned of stopwords and other non-word  characters yielded the following:
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/Base_Cleaned_WC.png)
+Overall, the terms seem normal for philosophical texts and confirm that we have appropriate data. Generating another wordcloud using TF-IDF yielded the following:
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/TFIDF_overall_WC.png)
+The TF-IDF wordcloud is pretty similar to the original which leads me to believe that something went wrong along the way. Luckily, this was primarily an excercise to explore the format of the data and is not relevant to the hypothesis testing. 
+
+## Step 4 - Grouping publications by year to analyze regressability
+
+```{r,warning=FALSE,message=FALSE,echo = FALSE}
+data.activeYears = data.raw %>%
+  select(c(1:3,6)) %>%
+  group_by(title, school, original_publication_date) %>%
+  summarise() %>%
+  group_by(school, original_publication_date) %>%
+  summarise(count = n()) %>%
+  mutate(count = as.factor(count))
+```
+
+Plotting the publications over time to see if there are enough datapoints between the schools to make the analysis worthwhile yields:
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/PubTime_All.png)
+
+```{r,warning=FALSE,message=FALSE,echo = FALSE}
+data.activeYearsgtt = data.activeYears %>%
+  group_by(school) %>%
+  filter(n() > 2)
+```
+
+Filtering the schools of thought to those with 3 or more publications - so that a regression is nontrivial - yielded the following plot:
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/PubTime_GTT.png)
+From here, most of the remaining schools should have enough datapoints to attempt to fit linear models to them and determine if nonzero coefficients are significant or not. 
+
+## Step 5 - Loop through the remaining schools and perform regressions to test hypothesis
+```{r,warning=FALSE,message=FALSE,echo = TRUE}
+#Sentiment Analysis per school using helper function:
+PerSchoolSentimentAnalysis <- function(sch, data.gttSenti) {
+  schooldata.raw = data.gttSenti[data.gttSenti$school==sch,]
+  
+  years = unique(schooldata.raw$original_publication_date)
+  schooldata.Senti = data.frame(matrix(ncol = 5, nrow = 0))
+  colnames(schooldata.Senti) <- c("year", "negative", "positive", "sentiment", "netSenti")
+  
+  for (i in years){
+    #per publication sentiment
+    schooldata.temptxt = schooldata.raw %>%
+      filter(original_publication_date == i)
+    schooldata.yrTokens = data_frame(tokens = schooldata.temptxt$tokenized_txt) %>% 
+      unnest_tokens(word, tokens)
+  #reference https://cran.r-project.org/web/packages/tidytext/vignettes/tidytext.html
+    schooldata.tmpSenti = schooldata.yrTokens %>% 
+      inner_join(get_sentiments("bing")) %>% 
+      count(sentiment) %>% 
+      spread(sentiment, n, fill = 0) %>%
+      mutate(sentiment = positive / (positive + negative), netSenti = positive-negative)
+    schooldata.yrSenti = cbind(data_frame(year = i), schooldata.tmpSenti)
+    schooldata.Senti = rbind(schooldata.Senti, schooldata.yrSenti)
+  }
+  percLM = lm(sentiment~year, data = schooldata.Senti)
+  netLM = lm(netSenti~year, data = schooldata.Senti)
+  
+  percPlot = ggplot(data = schooldata.Senti, aes(x=year, y=sentiment)) + 
+    geom_point(color='blue') +
+    geom_smooth(method = "lm", se = TRUE, formula = y~x)+
+    labs(subtitle = paste("Adj R2 = ",signif(summary(percLM)$adj.r.squared, 5),
+                       "Intercept =",signif(percLM$coef[[1]],5 ),
+                       " Slope =",signif(percLM$coef[[2]], 5),
+                       " P =",signif(summary(percLM)$coef[2,4], 5)))+
+    ggtitle(paste("Sentiment by Year for", str_to_title(sch)))+
+    xlab("Year")+
+    ylab("Positive Sentiment Percent")+
+    theme(plot.title = element_text(hjust = 0.5))
+  netPlot = ggplot(data = schooldata.Senti, aes(x=year, y=netSenti)) + 
+    geom_point(color='blue') +
+    geom_smooth(method = "lm", se = TRUE, formula = y~x)+
+    labs(subtitle = paste("Adj R2 = ",signif(summary(netLM)$adj.r.squared, 5),
+                          "Intercept =",signif(netLM$coef[[1]],5 ),
+                          " Slope =",signif(netLM$coef[[2]], 5),
+                          " P =",signif(summary(netLM)$coef[2,4], 5)))+
+    ggtitle(paste("Sentiment by Year for", str_to_title(sch)))+
+    xlab("Year")+
+    ylab("Net Positive Sentiment")+
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  png(paste("figs/", sch, "_plots.png", sep=""), units="in", width=12, height=5, res=600)
+  grid.arrange(percPlot, netPlot, ncol=2)
+  dev.off()
+  
+  #Insert plots here in markdown
+  
+  #save regression summaries for later
+  schooldata.yrlm = cbind(data_frame(school = sch),
+                          data_frame(list(percLM)),
+                          data_frame(list(netLM)))
+  colnames(schooldata.yrlm) <- c("school", "percentLM", "netLM")
+  return(schooldata.yrlm)
+}
+```
+
+
+```{r,warning=FALSE,message=FALSE,echo = TRUE}
+#filter the dataframe by the schools we want to look at
+data.gttSchools = unique(data.activeYearsgtt$school)
+data.gttSenti = data.raw %>%
+  filter(school %in% data.gttSchools)
+
+#create an empty dataframe to store the linear models in for plotting
+data.schoolLM = data.frame(matrix(ncol = 3, nrow = 0))
+colnames(data.schoolLM) <- c("school", "percentLM", "netLM")
+
+# loop over the interested schools using the helper function above
+for (school in data.gttSchools) {
+  data.schoolLM = rbind(data.schoolLM,
+                        PerSchoolSentimentAnalysis(school, data.gttSenti))
+}
+
+```
+The following plots were generated for each school (in reverse alpha. order):
+
+#### Rationalism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/rationalism_plots.png)
+
+#### Phenomenology:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/phenomenology_plots.png)
+
+#### Nietzsche:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/nietzsche_plots.png)
+
+#### German Idealism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/german_idealism_plots.png)
+
+#### Feminism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/feminism_plots.png)
+
+#### Empiricism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/empiricism_plots.png)
+
+#### Continental:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/continental_plots.png)
+
+#### Communism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/communism_plots.png)
+
+#### Capitalism:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/capitalism_plots.png)
+
+#### Analytic:
+
+![](M:/Documents/CU Coursework/STAT5243 Applied Data Science/Projects/Fall2021-Project1-AryaAyati/figs/analytic_plots.png)
+
+## Results
+
+The schools with the smallest p values were German Idealism and Feminism at P=0.13 and P=0.08 respectively when regressing against the net positive sentiment. Between the two, only Feminism had an adj R2 greater than 0.95 (next highest was Capitalism at 0.74) 
+
+## Conclusion
+
+Based on the regression results, we can say that Feminism is the only school that could be considered as having a change in sentiment from going net positive in 1792 to net negative by the latest publication 1981. While capitalism's regression was the next closest to explaining the data, it's slope was not far from zero and the sentiment stayed net positive over time. 

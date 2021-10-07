@@ -1,7 +1,17 @@
 # Arya Ayati Project 1
-#hypothesis: The sentiment of a school should not change over time since a school
-  #usually has a train of thought that doesn't usually evolve so much to change the
-  #overall sentiment
+
+packages.used=c("dplyr", "tidyverse", "tm", "wordcloud", "RColorBrewer", 
+                "tidytext", "Rcpp", "textclean", "ggalt", "ggplot2", "gridExtra")
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,
+                   repos='http://cran.us.r-project.org')
+}
+
 library(dplyr)
 library(tidyverse)
 library(tm)
@@ -23,18 +33,20 @@ unique(data.raw$school)
 summary(data.raw$original_publication_date)
 unique(data.raw$title)
 
-data.raw$sentence_replaced = replace_non_ascii(data.raw$sentence_lowered, replacement = "", remove.nonconverted = TRUE)
+data.raw = data.raw %>%
+  mutate(sentence_replaced = replace_non_ascii(sentence_lowered, 
+                                               replacement = "", 
+                                               remove.nonconverted = TRUE))
+#data.raw$sentence_replaced = replace_non_ascii(data.raw$sentence_lowered, replacement = "", remove.nonconverted = TRUE)
 
-sentenceCorpus <- Corpus(VectorSource(data.raw$sentence_replaced))
+sentenceCorpus <- Corpus(VectorSource(data.raw$sentence_lowered))
 sentenceCorpus<-tm_map(sentenceCorpus, removeWords, stopwords("english"))
 sentenceCorpus<-tm_map(sentenceCorpus, removeWords, character(0))
 sentenceCorpus<-tm_map(sentenceCorpus, removePunctuation)
 sentenceCorpus<-tm_map(sentenceCorpus, stripWhitespace)
 
 tdm <- TermDocumentMatrix(sentenceCorpus)
-tdm
 tdm = removeSparseTerms(tdm, 0.99)
-tdm
 tdm.tidy = tidytext::tidy(tdm)
 tdm.overall=summarise(group_by(tdm.tidy, term), sum(count))
 
@@ -53,9 +65,7 @@ dev.off()
 #need to remove sparse terms first to use weighting
 tdm.TFIDF <- TermDocumentMatrix(sentenceCorpus, 
                                 control = list(weighting = weightTfIdf))
-tdm.TFIDF
 tdm.TFIDF = removeSparseTerms(tdm.TFIDF, 0.99)
-tdm.TFIDF
 tdm.tidyTFIDF = tidy(tdm.TFIDF)
 tdm.overallTFIDF=summarise(group_by(tdm.tidyTFIDF, term), sum(count))
 
@@ -111,12 +121,6 @@ ggplot(data.activeYearsgtt, aes(x = original_publication_date, y = school,
 dev.off()
 
 #Sentiment Analysis per school here
-data.gttSchools = unique(data.activeYearsgtt$school)
-data.gttSenti = data.raw %>%
-  filter(school %in% data.gttSchools)
-# loop over schools using below function definition
-
-#Start Function definition with sch as parameter
 PerSchoolSentimentAnalysis <- function(sch, data.gttSenti) {
   schooldata.raw = data.gttSenti[data.gttSenti$school==sch,]
   
@@ -179,11 +183,16 @@ PerSchoolSentimentAnalysis <- function(sch, data.gttSenti) {
   return(schooldata.yrlm)
 }
 
+#filter the dataframe by the schools we want to look at
+data.gttSchools = unique(data.activeYearsgtt$school)
+data.gttSenti = data.raw %>%
+  filter(school %in% data.gttSchools)
+
+#create an empty dataframe to store the linear models in for plotting
 data.schoolLM = data.frame(matrix(ncol = 3, nrow = 0))
 colnames(data.schoolLM) <- c("school", "percentLM", "netLM")
-# data.schoolLM = rbind(data.schoolLM,
-#                       PerSchoolSentimentAnalysis('empiricism', data.gttSenti))
 
+# loop over the interested schools using below function definition
 for (school in data.gttSchools) {
   data.schoolLM = rbind(data.schoolLM,
                         PerSchoolSentimentAnalysis(school, data.gttSenti))
