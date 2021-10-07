@@ -2,3 +2,5 @@
 data/philosophy_data.csv
 .RDataTmp
 .Rhistory
+lib/.RData
+lib/.Rhistory
